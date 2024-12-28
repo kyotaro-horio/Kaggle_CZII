@@ -12,7 +12,7 @@ from train.metric import calc_fbeta_metric_for_czii
 def train(
         output_dir, config, 
         train_loader, val_loader, 
-        model, loss_function, optimizer, scheduler, 
+        model, loss_function, metrics_function, optimizer, scheduler, 
         device, post_pred, post_label, 
         ):
     
@@ -65,8 +65,6 @@ def train(
             epoch_loss_val = 0
             step_val = 0
             with torch.no_grad():
-                fs = []
-                lbs = []
                 for val_data in val_loader:
                     step_val += 1
                     val_inputs = val_data["image"].to(device)
@@ -76,19 +74,16 @@ def train(
                     val_loss = loss_function(val_outputs, val_labels)
                     epoch_loss_val += val_loss.item()
 
-                    metric_val_outputs = \
-                        torch.stack([post_pred(i) for i in decollate_batch(val_outputs)], 0) # (7,96,96,96)xbatch_size [(7,96,96,96), (7,96,96,96), .., (7,96,96,96)]
-                    metric_val_labels = \
-                        torch.stack([post_label(i) for i in decollate_batch(val_labels)], 0)  # (7,96,96,96)xbatch_size [(7,96,96,96), (7,96,96,96), .., (7,96,96,96)]
-                    
+                    metric_val_outputs = [post_pred(i) for i in decollate_batch(val_outputs)]
+                    metric_val_labels = [post_label(i) for i in decollate_batch(val_labels)]
+
                     # compute metric for current iteration
-                    f, lb = calc_fbeta_metric_for_czii(metric_val_outputs, metric_val_labels)
-                    fs.append(f)
-                    lbs.append(lb)
+                    metrics_function(y_pred=metric_val_outputs, y=metric_val_labels)
 
                 epoch_loss_val /= step_val
-                metrics = torch.mean(torch.stack(fs, 0), 0)
-                metric = torch.mean(torch.stack(lbs, 0), 0)
+                metrics = metrics_function.aggregate(reduction="mean_batch")
+                metric = torch.mean(metrics).numpy(force=True)
+                metrics_function.reset()
 
                 if metric > best_metric:
                     best_metric = metric

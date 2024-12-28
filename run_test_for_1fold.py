@@ -253,22 +253,24 @@ if __name__ == '__main__':
 
                 prob = torch.softmax(model_output[0], dim=0) #prob.shape: (7,96,96,96)
                 
-                # thresh_prob = prob > config.certainty_threshold
-                # _, max_classes = thresh_prob.max(dim=0)
+                if isinstance(config.certainty_threshold, float):
+                    thresh_prob = prob > config.certainty_threshold
+                    _, max_classes = thresh_prob.max(dim=0)
 
-                # pred_masks.append(max_classes.cpu().numpy())
+                    pred_masks.append(max_classes.cpu().numpy())
 
-                max_probs, max_classes = torch.max(prob, dim=0)
-                
-                thresh_prob = torch.zeros_like(prob)
-                thresh_max_classes = torch.zeros_like(prob[0])
-                for ch in range(n_classes):
-                    max_channel_is_one = torch.where(max_classes==ch, 1, 0)
-                    thresh_prob[ch] = max_probs * max_channel_is_one > config.certainty_threshold[ch]
-                    thresh_prob[ch] = torch.where(thresh_prob[ch]==1, ch, 0)
-                    thresh_max_classes += thresh_prob[ch]
+                else:
+                    max_probs, max_classes = torch.max(prob, dim=0)
+                    
+                    thresh_prob = torch.zeros_like(prob)
+                    thresh_max_classes = torch.zeros_like(prob[0])
+                    for ch in range(n_classes):
+                        max_channel_is_one = torch.where(max_classes==ch, 1, 0)
+                        thresh_prob[ch] = max_probs * max_channel_is_one > config.certainty_threshold[ch]
+                        thresh_prob[ch] = torch.where(thresh_prob[ch]==1, ch, 0)
+                        thresh_max_classes += thresh_prob[ch]
 
-                pred_masks.append(thresh_max_classes.cpu().numpy())
+                    pred_masks.append(thresh_max_classes.cpu().numpy())
 
 
             reconstructed_mask = reconstruct_array(pred_masks, coordinates, tomo.shape)

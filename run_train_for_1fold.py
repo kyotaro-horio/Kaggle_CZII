@@ -121,9 +121,11 @@ if __name__ == '__main__':
 
     lr = float(config.lr)
     optimizer = torch.optim.Adam(model.parameters(), lr)  
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
     # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: (1 - epoch / config.epochs) ** 0.9)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[config.epochs*0.3, config.epochs*0.8], gamma=0.1)
+    # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[config.epochs*0.3, config.epochs*0.8], gamma=0.1)
+
+    dice_metric = DiceMetric(include_background=False, reduction="mean", ignore_empty=True)
 
     loss_function = TverskyLoss(include_background=True, to_onehot_y=True, softmax=True)  # softmax=True for multiclass
 
@@ -150,7 +152,7 @@ if __name__ == '__main__':
     train(
         output_dir_train, config, 
         train_loader, val_loader, 
-        model, loss_function, optimizer, scheduler, 
+        model, loss_function, dice_metric, optimizer, scheduler, 
         device, 
         post_pred, post_label,
         )

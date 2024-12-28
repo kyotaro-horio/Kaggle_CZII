@@ -10,15 +10,18 @@ voxel_size: 10
 tomo_type: denoised
 
 #train
+seed: 1234
 patch_size: 96
 batch_size: 16
 lr: 1e-3
 epochs: 500
-val_interval: 5
+val_interval: 1
 
 #test
-model_folder: 20241226_183915_unet_16_0.001_500_96x96x96
-certainty_threshold: [0.5, 0.75,0.95,0.75,0.95,0.95,0.95]
-# certainty_threshold: 0.7
+model_folder: 20241227_171833_unet_16_0.001_500_96x96x96
+
+# certainty_threshold: 0.5
+certainty_threshold: [0.5, 0.55,0.55,0.95,0.95,0.95,0.7]
+
 blob_threshold: 150
 tta: True

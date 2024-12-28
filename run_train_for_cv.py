@@ -1,253 +1,181 @@
-# Make a copick project
+import warnings
+warnings.filterwarnings("ignore")
+
 import os
 import shutil
 
-import copick
+from datetime import datetime
 
-from copick_utils.segmentation import segmentation_from_picks
-import copick_utils.writers.write as write
-from collections import defaultdict
+import copick
 
 from tqdm import tqdm
 import numpy as np
+from glob import glob
 
-from monai.networks.nets import UNet
+from monai.networks.nets import UNet, DynUNet
 from monai.losses import DiceLoss, FocalLoss, TverskyLoss
 from monai.metrics import DiceMetric, ConfusionMatrixMetric
+from monai.transforms import AsDiscrete
 
 from torchinfo import summary
-import mlflow.pytorch
-
 
 from train.trainer import *
+from train.dataloader import *
+from train.loss import FbetaLoss
+
 from czii_helper.helper import *
+from czii_helper.helper2 import *
 
-# -- config
-cfg = dotdict(
-    my_num_samples = 16, 
-    train_batch_size = 1, 
-    val_batch_size = 1, 
-)
 
-# -- 
+def run_train(fold):
+    
+    config = dotdict(
+        load_config('config.yml')
+    )
 
-config_blob = """{
-    "name": "czii_cryoet_mlchallenge_2024",
-    "description": "2024 CZII CryoET ML Challenge training data.",
-    "version": "1.0.0",
+    seed_everything(config.seed)
+    
+    input_dir           = config.local_kaggle_dataset_dir
 
-    "pickable_objects": [
-        {
-            "name": "apo-ferritin",
-            "is_particle": true,
-            "pdb_id": "4V1W",
-            "label": 1,
-            "color": [  0, 117, 220, 128],
-            "radius": 60,
-            "map_threshold": 0.0418
-        },
-        {
-            "name": "beta-galactosidase",
-            "is_particle": true,
-            "pdb_id": "6X1Q",
-            "label": 3,
-            "color": [ 76,   0,  92, 128],
-            "radius": 90,
-            "map_threshold": 0.0578
-        },
-        {
-            "name": "ribosome",
-            "is_particle": true,
-            "pdb_id": "6EK0",
-            "label": 4,
-            "color": [  0,  92,  49, 128],
-            "radius": 150,
-            "map_threshold": 0.0374
-        },
-        {
-            "name": "thyroglobulin",
-            "is_particle": true,
-            "pdb_id": "6SCJ",
-            "label": 5,
-            "color": [ 43, 206,  72, 128],
-            "radius": 130,
-            "map_threshold": 0.0278
-        },
-        {
-            "name": "virus-like-particle",
-            "is_particle": true,
-            "label": 6,
-            "color": [255, 204, 153, 128],
-            "radius": 135,
-            "map_threshold": 0.201
-        },
-        {
-            "name": "membrane",
-            "is_particle": false,
-            "label": 8,
-            "color": [100, 100, 100, 128]
-        },
-        {
-            "name": "background",
-            "is_particle": false,
-            "label": 9,
-            "color": [10, 150, 200, 128]
-        }
-    ],
+    output_dir          = config.output_dir
+    copick_config_path  = f"{output_dir}/copick.config"
+    output_overlay      = f"{output_dir}/overlay"
 
-    "overlay_root": "./working/overlay",
+    source_dir          = f'{input_dir}/train/overlay'
+    destination_dir     = f'{output_dir}/overlay'
 
-    "overlay_fs_args": {
-        "auto_mkdir": true
-    },
-
-    "static_root": "/media/kyotaro/ubuntu_volume_1/Dataset/kaggle/czii-cryo-et-object-identification/train/static"
-}"""
-
-if __name__ == '__main__':
-    input_dir = '/media/kyotaro/ubuntu_volume_1/Dataset/kaggle/czii-cryo-et-object-identification'
-    output_dir = './working'
     os.makedirs(output_dir,exist_ok=True)
-
-    copick_config_path = f"{output_dir}/copick.config"
-    output_overlay = f"{output_dir}/overlay"
-
-    with open(copick_config_path, "w") as f:
-        f.write(config_blob)
         
-    # Update the overlay
-    # Define source and destination directories
-    source_dir = f'{input_dir}/train/overlay'
-    destination_dir = f'{output_dir}/overlay'
-
-    # Walk through the source directory
-    for root, dirs, files in os.walk(source_dir):
-        # Create corresponding subdirectories in the destination
-        relative_path = os.path.relpath(root, source_dir)
-        target_dir = os.path.join(destination_dir, relative_path)
-        os.makedirs(target_dir, exist_ok=True)
-        
-        # Copy and rename each file
-        for file in files:
-            if file.startswith("curation_0_"):
-                new_filename = file
-            else:
-                new_filename = f"curation_0_{file}"
-            
-            # Define full paths for the source and destination files
-            source_file = os.path.join(root, file)
-            destination_file = os.path.join(target_dir, new_filename)
-            
-            # Copy the file with the new name
-            shutil.copy2(source_file, destination_file)
-            # print(f"Copied {source_file} to {destination_file}")
-
-
-    # -- get copick root
     root = copick.from_file(copick_config_path)
 
-    # -- config for copick
-    copick_user_name = "copickUtils"
-    copick_segmentation_name = "paintedPicks"
-    voxel_size = 10
-    tomo_type = "denoised"
-
-
-    # -- generate multi-calss segmentation masks from picks, and save them to the copick overlay directory once
-    generate_masks=False
-    if not os.path.exists(destination_dir+'/ExperimentRuns/TS_5_4/Segmentations'):
-        generate_masks = True
-    else:
-        generate_masks = False
-
-    if generate_masks:
-        target_objects = defaultdict(dict)
-        for object in root.pickable_objects:
-            if object.is_particle:
-                target_objects[object.name]['label'] = object.label
-                target_objects[object.name]['radius'] = object.radius
-
-
-        for run in tqdm(root.runs):
-            tomo = run.get_voxel_spacing(10)
-            tomo = tomo.get_tomogram(tomo_type).numpy()
-            target = np.zeros(tomo.shape, dtype=np.uint8)
-            for pickable_object in root.pickable_objects:
-                pick = run.get_picks(object_name=pickable_object.name, user_id="curation")
-                if len(pick):  
-                    target = segmentation_from_picks.from_picks(pick[0], 
-                                                                target, 
-                                                                target_objects[pickable_object.name]['radius'] * 0.8,
-                                                                target_objects[pickable_object.name]['label']
-                                                                )
-            write.segmentation(run, target, copick_user_name, name=copick_segmentation_name) 
+    # -- split all data into train, val, and test set
+    all_data_path = sorted(glob(f'{output_dir}/overlay/ExperimentRuns/*'))
+    n_fold = len(all_data_path)
+    test_names = [os.path.basename(f) for f in all_data_path]
+    val_names = test_names[1:] + test_names[:1]
+    train_names = []
+    for i in range(n_fold):
+        tmp_train_names = test_names.copy()
+        tmp_train_names.remove(test_names[i])
+        tmp_train_names.remove(val_names[i])
+        train_names.append(tmp_train_names)
+    # -- 
 
     # -- get tomograms and their segmentation mask arrays
-    data_dicts = []
-    for run in tqdm(root.runs):
-        tomogram = run.get_voxel_spacing(voxel_size).get_tomogram(tomo_type).numpy()
-        segmentation = run.get_segmentations(name=copick_segmentation_name, user_id=copick_user_name, voxel_size=voxel_size, is_multilabel=True)[0].numpy()
-        data_dicts.append({"image": tomogram, "label": segmentation})
-    
+    train_data_dicts = []
+    val_data_dicts = []
+    test_data_dicts = []
+    for id, run in enumerate(root.runs):
+        tomogram = run.get_voxel_spacing(config.voxel_size).get_tomogram(config.tomo_type).numpy()
+        segmentation = run.get_segmentations(
+            name=config.copick_segmentation_name, 
+            user_id=config.copick_user_name, 
+            voxel_size=config.voxel_size, 
+            is_multilabel=True
+            )[0].numpy()
+        
+        if run.name in train_names[fold]:
+            train_data_dicts.append({"image": tomogram, "label": segmentation})
+        elif run.name in val_names[fold]:
+            val_data_dicts.append({"image": tomogram, "label": segmentation})
+        elif run.name in test_names[fold]:
+            test_names.append({"image": tomogram, "label": segmentation})
+        else:
+            raise AssertionError(f'{run.name} is not in overlay')
+
     #set up dataloaders
-    train_files, val_files = data_dicts[:5], data_dicts[5: 7]
-    print(f'train {len(train_files)}samples / val {len(val_files)}samples')
-
+    train_files, val_files, test_files = train_data_dicts, val_data_dicts, test_data_dicts
     train_loader, val_loader, train_ds, val_ds \
-          = make_train_val_dataloaders(train_files, val_files, cfg)
+          = make_train_val_dataloaders(train_files, val_files, config)
 
-# -- define model (todo)
+# -- 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print('device:', device)
+    
+    print()
+    print(
+        f'dataset (fold{fold}): '
+        f'\n\ttrain {train_names[fold]}'
+        f'\n\tval   {val_names[fold]}'
+        f'\n\ttest  {test_names[fold]}'
+        )
+    print(
+        f'model:'
+        f'\n\t{config.model}'
+        )
+    print(
+        f'device:'  
+        f'\n\t{device}'
+        )
+    print()
 
-    # Create UNet, DiceLoss and Adam optimizer
-    model = UNet(
-        spatial_dims=3,
-        in_channels=1,
-        out_channels=len(root.pickable_objects)+1,
-        channels=(48, 64, 80, 80),
-        strides=(2, 2, 1),
-        num_res_units=1,
-    ).to(device)
+    if config.model == 'unet':
+        # Create UNet, DiceLoss and Adam optimizer
+        model = UNet(
+            spatial_dims=3,
+            in_channels=1,
+            out_channels=n_classes,
+            channels=(48, 64, 80, 80),
+            strides=(2, 2, 1),
+            num_res_units=1,
+        ).to(device)
 
-    lr = 1e-3
-    optimizer = torch.optim.Adam(model.parameters(), lr)
-    #loss_function = DiceLoss(include_background=True, to_onehot_y=True, softmax=True)  # softmax=True for multiclass
+    elif config.model == 'dynunet':
+        model = DynUNet(
+            spatial_dims=3,
+            in_channels=1,
+            out_channels=n_classes,
+            kernel_size=[3, 3, 3, 3],
+            strides=[1, 2, 2, 2],
+            upsample_kernel_size=[2, 2, 2],
+            filters=[32, 64, 96, 128],
+            # deep_supr_num=3,  # Add deep supervision
+            # res_block=True, 
+        ).to(device)
+    
+    else:
+        raise AssertionError('MODEL NOT FOUND!!')
+
+    lr = float(config.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr)  
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
+    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: (1 - epoch / config.epochs) ** 0.9)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[config.epochs*0.3, config.epochs*0.8], gamma=0.1)
+
+    dice_metric = DiceMetric(include_background=False, reduction="mean", ignore_empty=True)
+
     loss_function = TverskyLoss(include_background=True, to_onehot_y=True, softmax=True)  # softmax=True for multiclass
-    dice_metric = DiceMetric(include_background=False, reduction="mean", ignore_empty=True)  # must use onehot for multiclass
-    recall_metric = ConfusionMatrixMetric(include_background=False, metric_name="recall", reduction="None")
+
 # -- 
 
+    dt = datetime.now().strftime('%Y%m%d_%H%M%S')
+    print('-'*30, f'{dt} start training from here!!', '-'*30)
+    print()
 
-    mlflow.end_run()
-    mlflow.set_experiment('training 3D U-Net model for the cryoET ML Challenge')
-    epochs = 50
+    output_folder_name_for_all_fold = \
+        f'{dt}_{config.model}' + \
+            f'_{config.batch_size}_{lr}_{config.epochs}' + \
+                f'_{config.patch_size}x{config.patch_size}x{config.patch_size}'
+    
+    output_dir_train = \
+        f'{output_dir}/train/{output_folder_name_for_all_fold}/fold{fold}'
+    
+    os.makedirs(output_dir_train, exist_ok=True)
 
-    with mlflow.start_run():
-        params = {
-            "epochs": epochs,
-            "learning_rate": lr,
-            "loss_function": loss_function.__class__.__name__,
-            "metric_function": recall_metric.__class__.__name__,
-            "optimizer": "Adam",
-        }
-        # Log training parameters.
-        mlflow.log_params(params)
+    # Log model summary.
+    # with open(f"{output_dir_train}/model_summary.txt", "w") as f:
+    #     f.write(str(summary(model)))
 
-        # Log model summary.
-        with open("model_summary.txt", "w") as f:
-            f.write(str(summary(model)))
-        mlflow.log_artifact("model_summary.txt")
+    post_pred = AsDiscrete(argmax=True, to_onehot=n_classes)
+    post_label = AsDiscrete(to_onehot=n_classes)
 
-        post_pred = AsDiscrete(argmax=True, to_onehot=len(root.pickable_objects)+1)
-        post_label = AsDiscrete(to_onehot=len(root.pickable_objects)+1)
+    train(
+        output_dir_train, config, 
+        train_loader, val_loader, 
+        model, loss_function, dice_metric, optimizer, scheduler, 
+        device, 
+        post_pred, post_label,
+        )
 
-        train(
-            train_ds, val_ds, 
-            train_loader, val_loader, 
-            model, loss_function, dice_metric, optimizer, epochs,
-            device, post_pred, post_label,
-            )
+if __name__ == '__main__':
 
-        # Save the trained model to MLflow.
-        mlflow.pytorch.log_model(model, "model")
+    for i in range(7): run_train(i)
