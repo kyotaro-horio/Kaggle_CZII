@@ -10,53 +10,47 @@ from train.metric import calc_fbeta_metric_for_czii
 
 
 def train(
-        output_dir, config, 
-        train_loader, val_loader, 
+        cfg, trn_loader, val_loader, 
         model, loss_function, metrics_function, optimizer, scheduler, 
         device, post_pred, post_label, 
         ):
     
-    # print()
-    print('                    | loss            | fbeta4')
-    print('epoch   | lr        | train  | val    | a-fer  b-amy  b-gal  ribo   thyr   vlp    | avg    | best')
-    #      005/500 | 0.0000999 | 0.9091 | 0.9203 | 0.0062 0.0000 0.0000 0.0000 0.0545 0.0052 | 0.0172 | 0.0172 (005 epoch)
+    text = ''
+    text +=   '                    | loss -----------| metric ----------------------------------------------------------------'
+    text += '\nepoch   | lr        | train  | val    | a-fer  b-amy  b-gal  ribo   thyr   vlp    | mean   | best              '
+    text += '\n========|===========|========|========|===========================================|========|==================='
+    #          005/500 | 0.0000999 | 0.9091 | 0.9203 | 0.0062 0.0000 0.0000 0.0000 0.0545 0.0052 | 0.0172 | 0.0172 (005 epoch)
+    print(text)
 
-    with open(f"{output_dir}/train_log.csv", 'w') as f:
+    with open(f"./working/train/{cfg.model_folder}/log_stage{cfg.stage}_fold{cfg.fold}.csv", 'w') as f:
         writer = csv.writer(f)
-        writer.writerow(
-            [
+        writer.writerow([
                 'epoch', 'lr', 'loss_train', 'loss_val',
-                'fbeta4_a-fer', 'fbeta4_b-amy', 'fbeta4_b-gal', 'fbeta4_ribo', 'fbeta4_thyr', 'fbeta4_vlp', 
-                'lb_score', 
-            ]
-        )
+                'dice_a_fer', 'dice_b_amy', 'dice_b_gal', 'dice_ribo', 'dice_thyr', 'dice_vlp', 
+                'dice_mean', 
+            ])
 
-    max_epochs          = config.epochs
-    val_interval        = config.val_interval
-    best_metric         = -1
-    best_metric_epoch   = -1
-
+    max_epochs = cfg.epochs
+    if cfg.stage == 2:
+        max_epochs = 100
+    val_interval = cfg.val_interval
+    best_metric = -1
+    best_metric_epoch = -1
     for epoch in range(max_epochs):
-
         model.train()
         epoch_loss = 0
         step = 0
-        for batch_data in train_loader:
+        for batch_data in trn_loader:
             step += 1
             inputs = batch_data["image"].to(device)
             labels = batch_data["label"].to(device)
             optimizer.zero_grad()
-            
             outputs = model(inputs)
             loss = loss_function(outputs, labels)
             loss.backward()
-            
             optimizer.step()
-            
             epoch_loss += loss.item()
-        
         epoch_loss /= step
-        
         scheduler.step()
         current_lr = scheduler.get_last_lr()[0]
         
@@ -83,30 +77,23 @@ def train(
                 epoch_loss_val /= step_val
                 metrics = metrics_function.aggregate(reduction="mean_batch")
                 metric = torch.mean(metrics).numpy(force=True)
+                # metric = (metrics[0]*1 + metrics[1]*0 + metrics[2]*2 + metrics[3]*1 + metrics[4]*2 + metrics[5]*1) / 7 # weighted dice metric for czii
                 metrics_function.reset()
 
                 if metric > best_metric:
                     best_metric = metric
                     best_metric_epoch = epoch + 1
-                    torch.save(model.state_dict(), f"{output_dir}/best_metric_model.pth")
+                    torch.save(model.state_dict(), f"./working/train/{cfg.model_folder}/{cfg.experiment_name}_{cfg.fold}.pth")
                                     
-                print(
-                    f"{epoch + 1:0>3}/{max_epochs} | " \
-                    f"{current_lr:.7f} | " \
-                    f"{epoch_loss:.4f} | {epoch_loss_val:.4f} | " \
-                    f"{metrics[0]:.4f} {metrics[1]:.4f} {metrics[2]:.4f} {metrics[3]:.4f} {metrics[4]:.4f} {metrics[5]:.4f} | " \
-                    f"{metric:.4f} | {best_metric:.4f} ({best_metric_epoch:0>3} epoch)"
-                    )
+                print(f"{epoch + 1:0>3}/{max_epochs:0>3} | {current_lr:.7f} | {epoch_loss:.4f} | {epoch_loss_val:.4f} | {metrics[0]:.4f} {metrics[1]:.4f} {metrics[2]:.4f} {metrics[3]:.4f} {metrics[4]:.4f} {metrics[5]:.4f} | {metric:.4f} | {best_metric:.4f} ({best_metric_epoch:0>3} epoch)")
                 
                 metrics = [float(m) for m in metrics]
                 metric = float(metric)
-                with open(f"{output_dir}/train_log.csv", 'a') as f:
+                with open(f"./working/train/{cfg.model_folder}/log_stage{cfg.stage}_fold{cfg.fold}.csv", 'a') as f:
                     writer = csv.writer(f)
-                    writer.writerow(
-                        [
+                    writer.writerow([
                             epoch + 1, current_lr, epoch_loss, epoch_loss_val, 
                             metrics[0], metrics[1], metrics[2], metrics[3], metrics[4], metrics[5], 
                             metric, 
-                        ]
-                    )
+                        ])
 

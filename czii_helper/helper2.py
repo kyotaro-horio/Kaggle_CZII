@@ -16,7 +16,11 @@ id_to_name = {
 
 # --
 
-def calculate_patch_starts(dimension_size: int, patch_size: int) -> List[int]:
+def calculate_patch_starts(
+        dimension_size: int, 
+        patch_size: int, 
+        overlap_factor=1
+        ) -> List[int]:
     """
     Calculate the starting positions of patches along a single dimension
     with minimal overlap to cover the entire dimension.
@@ -37,7 +41,7 @@ def calculate_patch_starts(dimension_size: int, patch_size: int) -> List[int]:
         return [0]
         
     # Calculate number of patches needed
-    n_patches = np.ceil(dimension_size / patch_size)
+    n_patches = np.ceil(dimension_size / patch_size) * overlap_factor
     
     if n_patches == 1:
         return [0]
@@ -56,7 +60,11 @@ def calculate_patch_starts(dimension_size: int, patch_size: int) -> List[int]:
     
     return positions
 
-def extract_3d_patches_minimal_overlap(arrays: List[np.ndarray], patch_size: int) -> Tuple[List[np.ndarray], List[Tuple[int, int, int]]]:
+def extract_3d_patches_minimal_overlap(
+        arrays: List[np.ndarray], 
+        patch_size: int, 
+        overlap: list, #xyz
+        ) -> Tuple[List[np.ndarray], List[Tuple[int, int, int]]]:
     """
     Extract 3D patches from multiple arrays with minimal overlap to cover the entire array.
     
@@ -90,9 +98,9 @@ def extract_3d_patches_minimal_overlap(arrays: List[np.ndarray], patch_size: int
     coordinates = []
     
     # Calculate starting positions for each dimension
-    x_starts = calculate_patch_starts(m, patch_size)
-    y_starts = calculate_patch_starts(n, patch_size)
-    z_starts = calculate_patch_starts(l, patch_size)
+    x_starts = calculate_patch_starts(m, patch_size, overlap[0])
+    y_starts = calculate_patch_starts(n, patch_size, overlap[1])
+    z_starts = calculate_patch_starts(l, patch_size, overlap[2])
     
     # Extract patches from each array
     for arr in arrays:

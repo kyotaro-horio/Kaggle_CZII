@@ -1,27 +1,24 @@
 local_kaggle_dataset_dir: /media/kyotaro/ubuntu_volume_1/Dataset/kaggle/czii-cryo-et-object-identification
-output_dir: ./working
-
-model: unet
-
-#copick
-copick_user_name: copickUtils
-copick_segmentation_name: paintedPicks
-voxel_size: 10
-tomo_type: denoised
+experiment_name: 3dunet_pretrain_submit
 
 #train
 seed: 1234
 patch_size: 96
 batch_size: 16
 lr: 1e-3
-epochs: 500
+epochs: 999
 val_interval: 1
 
 #test
-model_folder: 20241227_171833_unet_16_0.001_500_96x96x96
+model_folder: 20250130_103700_3dunet_16_1e-3_999_96x96x96
 
+based_on_fold2: False
 # certainty_threshold: 0.5
-certainty_threshold: [0.5, 0.55,0.55,0.95,0.95,0.95,0.7]
+# certainty_threshold: [0.5, 0.55, 0.55, 0.95, 0.95, 0.95, 0.7]
+certainty_threshold: [0.5, 0.05, 0.95, 0.9, 0.95, 0.95, 0.95]
 
 blob_threshold: 150
-tta: True
+tta: False
+tta_k_rotate: 3
+
+overlap: [1,2,2]

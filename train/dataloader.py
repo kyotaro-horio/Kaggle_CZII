@@ -1,84 +1,94 @@
 import torch
+import math
 
 from monai.data import DataLoader, Dataset, CacheDataset
 from monai.transforms import (
     Compose, 
     EnsureChannelFirstd, 
+    NormalizeIntensityd,
     Orientationd,  
     AsDiscrete,  
+    RandCropByLabelClassesd,
     RandFlipd, 
     RandRotate90d, 
-    NormalizeIntensityd,
-    RandCropByLabelClassesd,
+    RandAffined,
+    RandAdjustContrastd,  
+    RandStdShiftIntensityd, 
+    RandGaussianSmoothd, 
+    RandCropByPosNegLabeld, 
+    RandGaussianNoised, 
+    RandZoomd, 
+    Rand3DElasticd, 
+    RandShiftIntensityd, 
+    OneOf, 
 )
 
-def make_train_val_dataloaders(train_files, val_files, config):
-    
-    my_num_samples      = config.batch_size
-    train_batch_size    = 1
-    val_batch_size      = 1
+def generate_trn_val_dataloader(trn_files, val_files, cfg):
 
-    # Non-random transforms to be cached
     non_random_transforms = Compose([
         EnsureChannelFirstd(keys=["image", "label"], channel_dim="no_channel"),
         NormalizeIntensityd(keys="image"),
         Orientationd(keys=["image", "label"], axcodes="RAS")
     ])
 
-    # Random transforms to be applied during training
+    #https://www.kaggle.com/competitions/blood-vessel-segmentation/discussion/475522
     random_transforms = Compose([
-        RandCropByLabelClassesd(
+        RandCropByPosNegLabeld(
             keys=["image", "label"],
             label_key="label",
-            spatial_size=[config.patch_size, config.patch_size, config.patch_size],
-            num_classes=7,
-            num_samples=my_num_samples
+            spatial_size=(cfg.patch_size, cfg.patch_size, cfg.patch_size),  # adapt to your GPU memory, patch size
+            pos=1,
+            neg=1,
+            num_samples=cfg.batch_size,  # how many patches to generate per volume
+            image_key="image",
+            image_threshold=0
         ),
         RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[0, 2]),
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),    
+        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0), 
+        Rand3DElasticd(
+            keys=["image", "label"], prob=0.2,
+            sigma_range=(2, 4), magnitude_range=(1, 2),
+            mode=("bilinear", "nearest"), rotate_range=(0, 0, 0)  # or small angles if you want random rotations here
+        ),
+        RandGaussianSmoothd(
+            keys=["image"], prob=0.5,  
+            sigma_x=(0.5, 1.5), sigma_y=(0.5, 1.5), sigma_z=(0.5, 1.5), 
+        ), 
+        RandStdShiftIntensityd(keys=["image"], prob=0.5, factors=0.1),
+        RandAdjustContrastd(keys=["image"], prob=0.7, gamma=[0.8, 1.2]), 
     ])
 
-    # Create the cached dataset with non-random transforms
-    train_ds = CacheDataset(data=train_files, transform=non_random_transforms, cache_rate=1.0)
-
-    # Wrap the cached dataset to apply random transforms during iteration
-    train_ds = Dataset(data=train_ds, transform=random_transforms)
-
-    # DataLoader remains the same
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=train_batch_size,
+    trn_ds = CacheDataset(data=trn_files, transform=non_random_transforms, cache_rate=1.0)
+    trn_ds = Dataset(data=trn_ds, transform=random_transforms)
+    trn_loader = DataLoader(
+        trn_ds,
+        batch_size=1,
         shuffle=True,
         num_workers=4,
         pin_memory=torch.cuda.is_available()
     )
 
-    # Validation transforms
     val_transforms = Compose([
-        EnsureChannelFirstd(keys=["image", "label"], channel_dim="no_channel"),
-        NormalizeIntensityd(keys="image"),
+        # EnsureChannelFirstd(keys=["image", "label"], channel_dim="no_channel"),
+        # NormalizeIntensityd(keys="image"),
         RandCropByLabelClassesd(
             keys=["image", "label"],
             label_key="label",
-            spatial_size=[config.patch_size, config.patch_size, config.patch_size],
+            spatial_size=[cfg.patch_size, cfg.patch_size, cfg.patch_size],
             num_classes=7,
-            num_samples=my_num_samples,  # Use 1 to get a single, consistent crop per image
+            num_samples=cfg.batch_size,  # Use 1 to get a single, consistent crop per image
         ),
     ])
 
-    # Create validation dataset
     val_ds = CacheDataset(data=val_files, transform=non_random_transforms, cache_rate=1.0)
-
-    # Wrap the cached dataset to apply random transforms during iteration
-    val_ds = Dataset(data=val_ds, transform=random_transforms)
-
-    # Create validation DataLoader
+    # val_ds = Dataset(data=val_ds, transform=random_transforms)
+    val_ds = Dataset(data=val_ds, transform=val_transforms) # w/o transform in validation
     val_loader = DataLoader(
         val_ds,
-        batch_size=val_batch_size,
+        batch_size=1,
         num_workers=4,
         pin_memory=torch.cuda.is_available(),
         shuffle=False,  # Ensure the data order remains consistent
     )
 
-    return train_loader, val_loader, train_ds, val_ds
+    return trn_loader, val_loader

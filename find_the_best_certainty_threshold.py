@@ -1,20 +1,16 @@
 import os
 import shutil
-
 from datetime import datetime
-
 import copick
-
 from copick_utils.segmentation import segmentation_from_picks
 import copick_utils.writers.write as write
 from collections import defaultdict
-
 from tqdm import tqdm
 import numpy as np
+from glob import glob
+from pprint import pprint
 
-from monai.networks.nets import UNet
-from monai.networks.nets import DynUNet
-
+from monai.networks.nets import UNet, DynUNet
 from monai.data import DataLoader, Dataset, CacheDataset
 from monai.transforms import (
     Compose, 
@@ -34,9 +30,9 @@ from scipy.optimize import linear_sum_assignment
 from train.trainer import *
 from czii_helper.helper import *
 from czii_helper.helper2 import *
-
 from czii_helper.dataset import *
 
+cls_names = ['', 'a-fer', 'b-amy', 'b-gal', 'ribo ', 'thyr ', 'vlp  ']
 
 def do_one_eval(truth, predict, threshold):
     P=len(predict)
@@ -109,31 +105,16 @@ def compute_lb_for_exp(submit_df, overlay_dir):
 
     return gb
 
-if __name__=='__main__':
 
-    config = dotdict(
-        load_config('config.yml')
-    )
+def find_the_best_certainty_threshold(cfg):
 
-    input_dir  = config.local_kaggle_dataset_dir
-    output_dir = config.output_dir
-    os.makedirs(output_dir,exist_ok=True)
+    input_dir  = cfg.local_kaggle_dataset_dir
+    path_to_model = sorted(glob(f'./working/train/{cfg.model_folder}/*.pth'))
+    root = copick.from_file("./working/copick.config")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    path_to_model = f'./working/train/{config.model_folder}/best_metric_model.pth'
-
-    # -- get copick root
-    copick_config_path = f"{output_dir}/copick.config"
-    root = copick.from_file(copick_config_path)
-
-    # -- get tomograms and their segmentation mask arrays
-    data_dicts = []
-    for run in tqdm(root.runs):
-        tomogram = run.get_voxel_spacing(config.voxel_size).get_tomogram(config.tomo_type).numpy()
-        segmentation = run.get_segmentations(name=config.copick_segmentation_name, user_id=config.copick_user_name, voxel_size=config.voxel_size, is_multilabel=True)[0].numpy()
-        data_dicts.append({"image": tomogram, "label": segmentation})
-    
-    #set up dataloaders
-    train_files, val_files, test_files = data_dicts[:2] + data_dicts[4:], data_dicts[3: 4], data_dicts[2: 3]
+    os.makedirs('./working',exist_ok=True)
+    print(f'\n** experiment for thresh starts w/ model {cfg.model_folder}!! **\n')
 
     # Non-random transforms to be cached
     inference_transforms = Compose([
@@ -142,109 +123,78 @@ if __name__=='__main__':
         Orientationd(keys=["image"], axcodes="RAS")
     ])
 
-# --
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = UNet(
+        spatial_dims=3,
+        in_channels=1,
+        out_channels=len(root.pickable_objects)+1,
+        channels=(48, 64, 80, 80),
+        strides=(2, 2, 1),
+        num_res_units=1,
+    ).to(device)
+# ---
+
+    models = []
+    for p in path_to_model:
+        print(f'load {os.path.basename(p)}')
+        model.load_state_dict(torch.load(p))
+        model.eval()
+        models.append(model)
     
-    print()
-    print(
-        f'dataset: '
-        f'\n\ttrain {len(train_files)} samples' 
-        f'\n\tval   {len(val_files)} samples'
-        f'\n\ttest  {len(test_files)} samples')
-    print(
-        f'device:'  
-        f'\n\t{device}')
-    print()
+    if cfg.based_on_fold2:
+        models = models[2:3]
 
-    if config.model == 'unet':
-        # Create UNet, DiceLoss and Adam optimizer
-        model = UNet(
-            spatial_dims=3,
-            in_channels=1,
-            out_channels=len(root.pickable_objects)+1,
-            channels=(48, 64, 80, 80),
-            strides=(2, 2, 1),
-            num_res_units=1,
-        ).to(device)
-
-    elif config.model == 'dynunet':
-        # model = DynUNet(
-        #     spatial_dims=3,
-        #     in_channels=1,
-        #     out_channels=len(root.pickable_objects)+1,
-        #     kernel_size=[3, 3, 3, 3, 3],
-        #     strides=[1, 2, 2, 2, 2],
-        #     upsample_kernel_size=[2, 2, 2, 2],
-        #     filters=[32, 64, 128, 256, 320],
-        #     # deep_supr_num=3,  # Add deep supervision
-        # ).to(device)
-        
-        model = DynUNet(
-            spatial_dims=3,
-            in_channels=1,
-            out_channels=n_classes,
-            kernel_size=[3, 3, 3, 3],
-            strides=[1, 2, 2, 2],
-            upsample_kernel_size=[2, 2, 2],
-            filters=[32, 64, 96, 128],
-            # deep_supr_num=3,  # Add deep supervision
-            # res_block=True, 
-        ).to(device)
-    
-    else:
-        raise AssertionError('MODEL NOT FOUND!!')
-
-# -- 
-
-    model.load_state_dict(torch.load(path_to_model))
-    model.eval()
-    
-    # -- set threshold list for this exp. 
-    step = 0.05
+    # -- set threshold list for this experiment
+    step = 0.05 #0.05
     thresh_list = [int(step*i*100)/100 for i in range(1, int(1/step))] 
-    print('thresh_list=', thresh_list)
+    print('\nthreshold steps:', thresh_list)
 
     import csv
-    with open(f'./working/train/{config.model_folder}/experiment_for_finding_best_certainty_threshold.csv', 'w') as f:
+    with open(f'./working/train/{cfg.model_folder}/experiment_for_finding_the_best_certainty_threshold.csv', 'w') as f:
         writer = csv.writer(f)
-
-        #header
-        thresh_header = [f'th{str(th)}' for th in thresh_list]
-        header = ['id', ]
-        header.extend(thresh_header)     
+        header = ['fold', 'cls_id'] + [str(th) for th in thresh_list]     
         writer.writerow(header)
 
         with torch.no_grad():
             
-            for run in root.runs:
-                if run.name != 'TS_6_4': continue
+            max_fbeta_thresh_list = []
+            for fold, run in enumerate(root.runs):
+
+                if cfg.based_on_fold2 and run.name != 'TS_6_4': # for just testing fold2 #todo!!
+                    continue
 
                 tomo = run.get_voxel_spacing(10)
-                tomo = tomo.get_tomogram(config.tomo_type).numpy()
-
-                tomo_patches, coordinates  = extract_3d_patches_minimal_overlap([tomo], config.patch_size)
-
+                tomo = tomo.get_tomogram('denoised').numpy()
+                tomo_patches, coordinates  = extract_3d_patches_minimal_overlap([tomo], cfg.patch_size, cfg.overlap)
                 tomo_patched_data = [{"image": img} for img in tomo_patches]
-
                 tomo_ds = CacheDataset(data=tomo_patched_data, transform=inference_transforms, cache_rate=1.0)
 
-                # for exp_target_cls in [6]:
-                for exp_target_cls in classes:
+                print('\n', '-'*20, f'fold{fold} {run.name} {os.path.basename(path_to_model[fold])}', '-'*20, '\n')
+                print('cls | name  |         certainty thresh           | fbeta4')
+                print('    |       | 0    1    2    3    4    5    6    |       ')
+                print('====|=======|====================================|========')
+                print('0   | BG    |------------------------------------| SKIPPED')
+                #      1   | a-fer | 1.00 0.05 1.00 1.00 1.00 1.00 1.00 | 0.81
+
+                max_fbeta_thresh = [0.5]
+                # for target_cls in [1,2]:
+                for target_cls in classes:
+                    print('----|-------|------------------------------------|-------')
+                    #      1   | a-fer | 1.00 0.05 1.00 1.00 1.00 1.00 1.00 | 0.8095
                     
-                    fbeta_list = [exp_target_cls, ]
+                    fbeta_list  = [fold, target_cls, ]
+                    best_thresh = 0.05
+                    best_fbeta  = -1
                     for th in thresh_list:
                         
                         location_df = []
                         CERTAINTY_THRESHOLD = [1, ] #background is not considered in this exp
                         
                         for i in range(1, 6+1):
-                            if i == exp_target_cls:
+                            if i == target_cls:
                                 CERTAINTY_THRESHOLD.append(th)
                             else:
                                 CERTAINTY_THRESHOLD.append(1)
-                        print()
-                        print('CERTAINTY_THRESHOLD=', CERTAINTY_THRESHOLD) #thresholds are determined here!
-
+                        
                         pred_masks = []
                         for i in range(len(tomo_ds)):
                             input_tensor = tomo_ds[i]['image'].unsqueeze(0).to("cuda")
@@ -271,7 +221,7 @@ if __name__=='__main__':
                             cc = cc3d.connected_components(reconstructed_mask == c)
                             stats = cc3d.statistics(cc)
                             zyx=stats['centroids'][1:]*10.012444 #https://www.kaggle.com/competitions/czii-cryo-et-object-identification/discussion/544895#3040071
-                            zyx_large = zyx[stats['voxel_counts'][1:] > config.blob_threshold]
+                            zyx_large = zyx[stats['voxel_counts'][1:] > cfg.blob_threshold]
                             xyz =np.ascontiguousarray(zyx_large[:,::-1])
 
                             location[id_to_name[c]] = xyz
@@ -282,9 +232,44 @@ if __name__=='__main__':
                         location_df.insert(loc=0, column='id', value=np.arange(len(location_df)))
 
                         gb = compute_lb_for_exp(location_df, f'{input_dir}/train/overlay/ExperimentRuns')
-                        fbeta = gb.iloc[exp_target_cls-1]['f-beta4']
+                        fbeta = gb.iloc[target_cls-1]['f-beta4']
                         
-                        print(f'id={exp_target_cls} / fbeta={fbeta}')
+                        text = f'{target_cls}   | {cls_names[target_cls]} | {CERTAINTY_THRESHOLD[0]:.2f} {CERTAINTY_THRESHOLD[1]:.2f} {CERTAINTY_THRESHOLD[2]:.2f} {CERTAINTY_THRESHOLD[3]:.2f} {CERTAINTY_THRESHOLD[4]:.2f} {CERTAINTY_THRESHOLD[5]:.2f} {CERTAINTY_THRESHOLD[6]:.2f} | {fbeta:.4f}'
+
+                        if fbeta > best_fbeta:
+                            best_thresh = CERTAINTY_THRESHOLD[target_cls]
+                            best_fbeta  = fbeta
+                            text += ' BEST!!'
+
+                        print(text)
                         fbeta_list.append(fbeta)
-            
+
+                    max_fbeta_thresh.append(best_thresh)
                     writer.writerow(fbeta_list)
+            
+                max_fbeta_thresh_list.append(max_fbeta_thresh)
+    #             print(f'\n--\nfold{fold} done! ')
+    #             print(f'the best thresh list is {max_fbeta_thresh}')
+    
+    # print('\n--\nall experiment has done!!')
+    # print('best thresh for each model is')
+    # pprint(max_fbeta_thresh_list)
+    
+    return max_fbeta_thresh_list
+
+
+if __name__=='__main__':
+    
+    cfg = dotdict(load_config('config.yml'))
+    cfg.based_on_fold2 = False
+    cfg.overlap = [1,1,1]
+
+    res = find_the_best_certainty_threshold(cfg)
+
+    if cfg.based_on_fold2:
+        print(f'\n--\nfold2 done! ')
+        print(f'the best thresh list is {res[0]}')
+    else:
+        print('\n--\nall experiment has done!!')
+        print('best thresh for each model is')
+        pprint(res)
