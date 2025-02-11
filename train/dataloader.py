@@ -36,14 +36,15 @@ def generate_trn_val_dataloader(trn_files, val_files, cfg):
         RandCropByPosNegLabeld(
             keys=["image", "label"],
             label_key="label",
-            spatial_size=(cfg.patch_size, cfg.patch_size, cfg.patch_size),  # adapt to your GPU memory, patch size
+            spatial_size=(cfg.patch_size[0], cfg.patch_size[1], cfg.patch_size[2]),  # adapt to your GPU memory, patch size
             pos=1,
             neg=1,
             num_samples=cfg.batch_size,  # how many patches to generate per volume
             image_key="image",
             image_threshold=0
         ),
-        RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[0, 2]),
+        # RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[0, 2]),
+        RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=[1, 2]),
         RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0), 
         Rand3DElasticd(
             keys=["image", "label"], prob=0.2,
@@ -74,7 +75,7 @@ def generate_trn_val_dataloader(trn_files, val_files, cfg):
         RandCropByLabelClassesd(
             keys=["image", "label"],
             label_key="label",
-            spatial_size=[cfg.patch_size, cfg.patch_size, cfg.patch_size],
+            spatial_size=[cfg.patch_size[0], cfg.patch_size[1], cfg.patch_size[2]],
             num_classes=7,
             num_samples=cfg.batch_size,  # Use 1 to get a single, consistent crop per image
         ),

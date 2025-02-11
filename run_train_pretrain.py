@@ -81,9 +81,8 @@ def generate_split_dataset_submit():
         })
     return pd.DataFrame(df)
 
-def run_train(cfg, fold, stage):
+def run_train(cfg, stage):
 
-    cfg.fold = fold
     cfg.stage = stage
 
     os.makedirs('./working',exist_ok=True)
@@ -104,9 +103,9 @@ def run_train(cfg, fold, stage):
                 tomogram = run.get_voxel_spacing(voxel_size).get_tomogram(tt).numpy()
                 segmentation = run.get_segmentations(name=copick_segmentation_name, user_id=copick_user_name, voxel_size=voxel_size, is_multilabel=True)[0].numpy()
                 
-                if run.name in cfg['data_split'].iloc[fold]['train']:
+                if run.name in cfg['data_split'].iloc[cfg.fold]['train']:
                     trn_files.append({"image": tomogram, "label": segmentation})
-                elif run.name in cfg['data_split'].iloc[fold]['validation']:
+                elif run.name in cfg['data_split'].iloc[cfg.fold]['validation']:
                     val_files.append({"image": tomogram, "label": segmentation})
 
         trn_loader, val_loader = generate_trn_val_dataloader(trn_files, val_files, cfg)
@@ -119,9 +118,9 @@ def run_train(cfg, fold, stage):
             tomogram = run.get_voxel_spacing(voxel_size).get_tomogram(tomo_type[3]).numpy() #tomo_type='denoise' only
             segmentation = run.get_segmentations(name=copick_segmentation_name, user_id=copick_user_name, voxel_size=voxel_size, is_multilabel=True)[0].numpy()
             
-            if run.name in cfg['data_split'].iloc[fold]['train']:
+            if run.name in cfg['data_split'].iloc[cfg.fold]['train']:
                 trn_files.append({"image": tomogram, "label": segmentation})
-            elif run.name in cfg['data_split'].iloc[fold]['validation']:
+            elif run.name in cfg['data_split'].iloc[cfg.fold]['validation']:
                 val_files.append({"image": tomogram, "label": segmentation})
 
         trn_loader, val_loader = generate_trn_val_dataloader(trn_files, val_files, cfg)
@@ -146,7 +145,7 @@ def run_train(cfg, fold, stage):
     ).to(device)
 
     if stage == 2:
-        path_to_model = sorted(glob(f'./working/train/{cfg.model_folder}/*_{fold}.pth'))[0]
+        path_to_model = sorted(glob(f'./working/train/{cfg.model_folder}/*_{cfg.fold}.pth'))[0]
         model.load_state_dict(torch.load(path_to_model))
         for param in model.parameters():
             param.requires_grad = True
@@ -169,9 +168,9 @@ def run_train(cfg, fold, stage):
 
 def get_gaussian_weight(kernel_size, sigma=1, muu=0):
     x, y, z = torch.meshgrid(
-        torch.linspace(-kernel_size//2, kernel_size//2, kernel_size),
-        torch.linspace(-kernel_size//2, kernel_size//2, kernel_size), 
-        torch.linspace(-kernel_size//2, kernel_size//2, kernel_size)
+        torch.linspace(-kernel_size[0]//2, kernel_size[0]//2, kernel_size[0]),
+        torch.linspace(-kernel_size[1]//2, kernel_size[1]//2, kernel_size[1]), 
+        torch.linspace(-kernel_size[2]//2, kernel_size[2]//2, kernel_size[2])
         )
     mean = torch.Tensor([muu, muu, muu])  # Mean of the Gaussian
     std_dev = torch.Tensor([sigma, sigma, sigma])  # Standard deviation along each axis
@@ -277,12 +276,6 @@ def do_cv(cfg):
         strides=(2, 2, 1),
         num_res_units=1,
     ).to(device)
-
-    models = []
-    for p in path_to_model:
-        model.load_state_dict(torch.load(p))
-        model.eval
-        models.append(model)
     
     inference_transforms = Compose([
         EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
@@ -290,19 +283,23 @@ def do_cv(cfg):
         Orientationd(keys=["image"], axcodes="RAS")
     ])
 
-    sigma = cfg.patch_size//2-0
+    sigma = cfg.patch_size[1]//2-0
     weight = get_gaussian_weight(cfg.patch_size, sigma, 0).to('cuda')
-
-    if len(models) == 1:
-        runs = root.runs[2:3] #only test TS_6_4
-    else:
-        runs = root.runs
 
     with torch.no_grad():
         
         location_df = []
         inference_time = []
-        for fold, run in enumerate(runs):
+        for fold, run in enumerate(root.runs):
+
+            if fold != cfg.fold: 
+                continue
+            else:
+                for p in path_to_model:
+                    if fold == int(p[-len('.pth')-1]):
+                        print(f'load {p}')
+                        model.load_state_dict(torch.load(p))
+                        model.eval()
 
             print(f'** TEST {run.name} FOR CV **')
             start = time.time()
@@ -324,7 +321,7 @@ def do_cv(cfg):
                 if cfg.tta:
                     # w/o rotate
                     input_tensor = tomo_ds[i]['image'].unsqueeze(0).to('cuda')
-                    model_output_tmp = models[fold](input_tensor)
+                    model_output_tmp = model(input_tensor)
                     model_output_tmp = model_output_tmp.squeeze(0)
                     model_outputs_tta = [model_output_tmp]
                     # tta with rotate90(k=1~3)
@@ -334,7 +331,7 @@ def do_cv(cfg):
                         rotate_inverse = Rotate90(k=4-k, spatial_axes=(0, 2))
                         input_tensor = rotate(input_tensor)
                         input_tensor = input_tensor.unsqueeze(0)
-                        model_output_tmp = models[fold](input_tensor)
+                        model_output_tmp = model(input_tensor)
                         model_output_tmp = model_output_tmp.squeeze(0)
                         model_output_tmp = rotate_inverse(model_output_tmp)
                         model_outputs_tta.append(model_output_tmp)
@@ -342,22 +339,22 @@ def do_cv(cfg):
                     model_output = model_output.unsqueeze(0)
                 else:
                     input_tensor = tomo_ds[i]['image'].unsqueeze(0).to('cuda')
-                    model_output = models[fold](input_tensor)
+                    model_output = model(input_tensor)
 
                 prob = torch.softmax(model_output[0], dim=0) #prob.shape: (7,96,96,96)
 
                 reconstructed[
                     :, 
-                    coordinates[i][0]:coordinates[i][0] + cfg.patch_size,
-                    coordinates[i][1]:coordinates[i][1] + cfg.patch_size,
-                    coordinates[i][2]:coordinates[i][2] + cfg.patch_size
+                    coordinates[i][0]:coordinates[i][0] + cfg.patch_size[0],
+                    coordinates[i][1]:coordinates[i][1] + cfg.patch_size[1],
+                    coordinates[i][2]:coordinates[i][2] + cfg.patch_size[2]
                 ] += prob
 
                 count[
                     :, 
-                    coordinates[i][0]:coordinates[i][0] + cfg.patch_size,
-                    coordinates[i][1]:coordinates[i][1] + cfg.patch_size,
-                    coordinates[i][2]:coordinates[i][2] + cfg.patch_size
+                    coordinates[i][0]:coordinates[i][0] + cfg.patch_size[0],
+                    coordinates[i][1]:coordinates[i][1] + cfg.patch_size[1],
+                    coordinates[i][2]:coordinates[i][2] + cfg.patch_size[2]
                 ] += weight
 
             reconstructed /= count
@@ -423,26 +420,31 @@ if __name__ == '__main__':
     if 1:
         seed_everything(cfg.seed)
         
-        dt = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_folder_name_for_all_fold = f'{dt}_3dunet_{cfg.batch_size}_{cfg.lr}_{cfg.epochs}_{cfg.patch_size}x{cfg.patch_size}x{cfg.patch_size}'
-        os.makedirs(f'./working/train/{output_folder_name_for_all_fold}', exist_ok=True)
+        # dt = datetime.now().strftime('%Y%m%d_%H%M%S')
+        # output_folder_name_for_all_fold = f'{dt}_3dunet_{cfg.batch_size}_{cfg.lr}_{cfg.epochs}_{cfg.patch_size[0]}x{cfg.patch_size[1]}x{cfg.patch_size[2]}'
+        # os.makedirs(f'./working/train/{output_folder_name_for_all_fold}', exist_ok=True)
         
-        # cfg.data_split = generate_split_dataset()
-        cfg.data_split = generate_split_dataset_submit()
-        cfg.model_folder = output_folder_name_for_all_fold
-        # pprint(cfg)
+        cfg.data_split = generate_split_dataset()
+        # cfg.data_split = generate_split_dataset_submit()
 
-        print(f'\n** {dt} start training from here!! **')
+        # cfg.model_folder = output_folder_name_for_all_fold
+        cfg.model_folder = '20250211_001334_3dunet_4_1e-3_999_48x196x196'
 
-        for i in [0,1,2,3,4,5,6]: 
-        # for i in [2]:
+        # print(f'\n** {dt} start training from here!! **')
+
+        # for i in [0,1,2,3,4,5,6]: 
+        for i in [0]:
             print('\n' + '-'*20 + f' fold{i} ' + '-'*20)
-            run_train(cfg, fold=i, stage=1)
-            run_train(cfg, fold=i, stage=2)
-        
-    # -- eval
-    # cfg.based_on_fold2 = True
-    # cfg.certainty_threshold = find_the_best_certainty_threshold(cfg)
-    # do_cv(cfg)
 
-    # print(f'\ncertainty thresh is {cfg.certainty_threshold}')
+            cfg.fold = i
+            # run_train(cfg, stage=1) # pretrain with all tomo_type data except 'denoised'
+            # run_train(cfg, stage=2) # retrain with 'denoised'
+        
+            # -- eval
+            # cfg.certainty_threshold = find_the_best_certainty_threshold(cfg)
+
+            print(f'\ncertainty thresh is {cfg.certainty_threshold}\n')
+
+            do_cv(cfg)
+
+            

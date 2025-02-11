@@ -1,24 +1,19 @@
 local_kaggle_dataset_dir: /media/kyotaro/ubuntu_volume_1/Dataset/kaggle/czii-cryo-et-object-identification
-experiment_name: 3dunet_pretrain_submit
+experiment_name: 3dunet_pretrain
 
 #train
 seed: 1234
-patch_size: 96
-batch_size: 16
+patch_size: [48,196,196] #96
+batch_size: 4
 lr: 1e-3
-epochs: 999
+epochs: 300
 val_interval: 1
+radius_factor: 0.5
 
 #test
-model_folder: 20250130_103700_3dunet_16_1e-3_999_96x96x96
-
-based_on_fold2: False
-# certainty_threshold: 0.5
-# certainty_threshold: [0.5, 0.55, 0.55, 0.95, 0.95, 0.95, 0.7]
-certainty_threshold: [0.5, 0.05, 0.95, 0.9, 0.95, 0.95, 0.95]
-
-blob_threshold: 150
+model_folder: 20250210_170113_3dunet_16_1e-3_300_96x96x96
+certainty_threshold: [0.5, 0.75, 0.95, 0.95, 0.95, 0.95, 0.9]
+blob_threshold: 25
 tta: False
 tta_k_rotate: 3
-
-overlap: [1,2,2]
+overlap: [1,1,1]

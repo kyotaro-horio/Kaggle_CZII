@@ -62,8 +62,8 @@ def calculate_patch_starts(
 
 def extract_3d_patches_minimal_overlap(
         arrays: List[np.ndarray], 
-        patch_size: int, 
-        overlap: list, #xyz
+        patch_size: list, 
+        overlap: list, #zyx
         ) -> Tuple[List[np.ndarray], List[Tuple[int, int, int]]]:
     """
     Extract 3D patches from multiple arrays with minimal overlap to cover the entire array.
@@ -72,7 +72,7 @@ def extract_3d_patches_minimal_overlap(
     -----------
     arrays : List[np.ndarray]
         List of input arrays, each with shape (m, n, l)
-    patch_size : int
+    patch_size : list
         Size of cubic patches (a x a x a)
         
     Returns:
@@ -90,17 +90,17 @@ def extract_3d_patches_minimal_overlap(
     if not all(arr.shape == shape for arr in arrays):
         raise ValueError("All input arrays must have the same shape")
     
-    if patch_size > min(shape):
-        raise ValueError(f"patch_size ({patch_size}) must be smaller than smallest dimension {min(shape)}")
+    if min(patch_size) > min(shape):
+        raise ValueError(f"patch_size ({min(patch_size)}) must be smaller than smallest dimension {min(shape)}")
     
     m, n, l = shape
     patches = []
     coordinates = []
     
     # Calculate starting positions for each dimension
-    x_starts = calculate_patch_starts(m, patch_size, overlap[0])
-    y_starts = calculate_patch_starts(n, patch_size, overlap[1])
-    z_starts = calculate_patch_starts(l, patch_size, overlap[2])
+    x_starts = calculate_patch_starts(m, patch_size[0], overlap[0])
+    y_starts = calculate_patch_starts(n, patch_size[1], overlap[1])
+    z_starts = calculate_patch_starts(l, patch_size[2], overlap[2])
     
     # Extract patches from each array
     for arr in arrays:
@@ -108,9 +108,9 @@ def extract_3d_patches_minimal_overlap(
             for y in y_starts:
                 for z in z_starts:
                     patch = arr[
-                        x:x + patch_size,
-                        y:y + patch_size,
-                        z:z + patch_size
+                        x:x + patch_size[0],
+                        y:y + patch_size[1],
+                        z:z + patch_size[2]
                     ]
                     patches.append(patch)
                     coordinates.append((x, y, z))
@@ -142,13 +142,13 @@ def reconstruct_array(patches: List[np.ndarray],
     """
     reconstructed = np.zeros(original_shape, dtype=np.int64)  # To track overlapping regions
     
-    patch_size = patches[0].shape[0]
+    patch_size = patches[0].shape
     
     for patch, (x, y, z) in zip(patches, coordinates):
         reconstructed[
-            x:x + patch_size,
-            y:y + patch_size,
-            z:z + patch_size
+            x:x + patch_size[0],
+            y:y + patch_size[1],
+            z:z + patch_size[2]
         ] = patch
         
     

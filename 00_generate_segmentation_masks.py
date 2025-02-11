@@ -14,20 +14,20 @@ from czii_helper.helper import *
 
 if __name__ == '__main__':
     
-    config = dotdict(
-        load_config('config.yml')
-    )
-
-    input_dir           = config.local_kaggle_dataset_dir
-
-    output_dir          = config.output_dir
+    cfg = dotdict(load_config('config.yml'))
+    input_dir           = cfg.local_kaggle_dataset_dir
+    output_dir          = './working'
     copick_config_path  = f"{output_dir}/copick.config"
     output_overlay      = f"{output_dir}/overlay"
-
     source_dir          = f'{input_dir}/train/overlay'
     destination_dir     = f'{output_dir}/overlay'
+    os.makedirs(output_dir, exist_ok=True)
 
-    os.makedirs(output_dir,exist_ok=True)
+    radius_factor = cfg.radius_factor # 0.8
+    copick_user_name = 'copickUtils'
+    copick_segmentation_name = 'paintedPicks'
+    voxel_size = 10
+    tomo_type = 'denoised'
     
     # Walk through the source directory
     for root, dirs, files in os.walk(source_dir):
@@ -64,14 +64,14 @@ if __name__ == '__main__':
 
     for run in tqdm(root.runs):
         tomo = run.get_voxel_spacing(10)
-        tomo = tomo.get_tomogram(config.tomo_type).numpy()
+        tomo = tomo.get_tomogram(tomo_type).numpy()
         target = np.zeros(tomo.shape, dtype=np.uint8)
         for pickable_object in root.pickable_objects:
             pick = run.get_picks(object_name=pickable_object.name, user_id="curation")
             if len(pick):  
                 target = segmentation_from_picks.from_picks(pick[0], 
                                                             target, 
-                                                            target_objects[pickable_object.name]['radius'] * 0.8,
+                                                            target_objects[pickable_object.name]['radius'] * radius_factor,
                                                             target_objects[pickable_object.name]['label']
                                                             )
-        write.segmentation(run, target, config.copick_user_name, name=config.copick_segmentation_name) 
+        write.segmentation(run, target, copick_user_name, name=copick_segmentation_name) 

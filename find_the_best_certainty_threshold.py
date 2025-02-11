@@ -133,20 +133,10 @@ def find_the_best_certainty_threshold(cfg):
     ).to(device)
 # ---
 
-    models = []
-    for p in path_to_model:
-        print(f'load {os.path.basename(p)}')
-        model.load_state_dict(torch.load(p))
-        model.eval()
-        models.append(model)
-    
-    if cfg.based_on_fold2:
-        models = models[2:3]
-
     # -- set threshold list for this experiment
     step = 0.05 #0.05
     thresh_list = [int(step*i*100)/100 for i in range(1, int(1/step))] 
-    print('\nthreshold steps:', thresh_list)
+    print('threshold steps:', thresh_list)
 
     import csv
     with open(f'./working/train/{cfg.model_folder}/experiment_for_finding_the_best_certainty_threshold.csv', 'w') as f:
@@ -156,19 +146,24 @@ def find_the_best_certainty_threshold(cfg):
 
         with torch.no_grad():
             
-            max_fbeta_thresh_list = []
             for fold, run in enumerate(root.runs):
 
-                if cfg.based_on_fold2 and run.name != 'TS_6_4': # for just testing fold2 #todo!!
+                if fold != cfg.fold: 
                     continue
+                else:
+                    for p in path_to_model:
+                        if fold == int(p[-len('.pth')-1]):
+                            print(f'load {p}')
+                            model.load_state_dict(torch.load(p))
+                            model.eval()
 
                 tomo = run.get_voxel_spacing(10)
                 tomo = tomo.get_tomogram('denoised').numpy()
-                tomo_patches, coordinates  = extract_3d_patches_minimal_overlap([tomo], cfg.patch_size, cfg.overlap)
+                tomo_patches, coordinates  = extract_3d_patches_minimal_overlap([tomo], cfg.patch_size, [1,1,1])
                 tomo_patched_data = [{"image": img} for img in tomo_patches]
                 tomo_ds = CacheDataset(data=tomo_patched_data, transform=inference_transforms, cache_rate=1.0)
 
-                print('\n', '-'*20, f'fold{fold} {run.name} {os.path.basename(path_to_model[fold])}', '-'*20, '\n')
+                print('\n', '-'*20, f'fold{fold} {run.name}', '-'*20, '\n')
                 print('cls | name  |         certainty thresh           | fbeta4')
                 print('    |       | 0    1    2    3    4    5    6    |       ')
                 print('====|=======|====================================|========')
@@ -246,30 +241,20 @@ def find_the_best_certainty_threshold(cfg):
 
                     max_fbeta_thresh.append(best_thresh)
                     writer.writerow(fbeta_list)
-            
-                max_fbeta_thresh_list.append(max_fbeta_thresh)
-    #             print(f'\n--\nfold{fold} done! ')
-    #             print(f'the best thresh list is {max_fbeta_thresh}')
-    
-    # print('\n--\nall experiment has done!!')
-    # print('best thresh for each model is')
-    # pprint(max_fbeta_thresh_list)
-    
-    return max_fbeta_thresh_list
+                
+    return max_fbeta_thresh
 
 
 if __name__=='__main__':
     
     cfg = dotdict(load_config('config.yml'))
-    cfg.based_on_fold2 = False
-    cfg.overlap = [1,1,1]
+    cfg.fold = 0
 
     res = find_the_best_certainty_threshold(cfg)
 
-    if cfg.based_on_fold2:
-        print(f'\n--\nfold2 done! ')
-        print(f'the best thresh list is {res[0]}')
-    else:
-        print('\n--\nall experiment has done!!')
-        print('best thresh for each model is')
-        pprint(res)
+    print(
+        '\n'
+        'all experiment has done!!\n'
+        'the best thresh for each model is'
+        )
+    pprint(res)
