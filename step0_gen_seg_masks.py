@@ -9,20 +9,24 @@ import copick
 from copick_utils.segmentation import segmentation_from_picks
 import copick_utils.writers.write as write
 
-from czii_helper.helper import *
+from util.helper import *
 
 
 if __name__ == '__main__':
-    
+    # load config
     cfg = dotdict(load_config('config.yml'))
-    input_dir           = cfg.local_kaggle_dataset_dir
-    output_dir          = './working'
-    copick_config_path  = f"{output_dir}/copick.config"
-    output_overlay      = f"{output_dir}/overlay"
-    source_dir          = f'{input_dir}/train/overlay'
-    destination_dir     = f'{output_dir}/overlay'
-    os.makedirs(output_dir, exist_ok=True)
-
+    
+    # in/out directory
+    indir = cfg.local_kaggle_dataset_dir
+    outdir = './working'
+    os.makedirs(outdir, exist_ok=True)
+    
+    # paths
+    copick_config_path  = f"{outdir}/copick.config"
+    source_dir = f'{indir}/train/overlay'
+    destination_dir = f'{outdir}/overlay'
+    
+    # configs in this script
     radius_factor = cfg.radius_factor # 0.8
     copick_user_name = 'copickUtils'
     copick_segmentation_name = 'paintedPicks'
@@ -51,16 +55,14 @@ if __name__ == '__main__':
             shutil.copy2(source_file, destination_file)
             # print(f"Copied {source_file} to {destination_file}")
 
-
+    # generate multi-calss segmentation masks from picks, 
+    # and save them to the copick overlay directory once
     root = copick.from_file(copick_config_path)
-
-    # -- generate multi-calss segmentation masks from picks, and save them to the copick overlay directory once
     target_objects = defaultdict(dict)
     for object in root.pickable_objects:
         if object.is_particle:
             target_objects[object.name]['label'] = object.label
             target_objects[object.name]['radius'] = object.radius
-
 
     for run in tqdm(root.runs):
         tomo = run.get_voxel_spacing(10)
