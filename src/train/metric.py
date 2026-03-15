@@ -1,6 +1,6 @@
 import torch
 
-def calc_fbeta_metric_for_czii(
+def calc_fbeta(
         y_pred, y_true, #BCDWH 
         beta=4, 
         weights=[1, 0, 2, 1, 2, 1], 

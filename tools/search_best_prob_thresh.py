@@ -28,9 +28,8 @@ import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
 from train.trainer import *
-from czii_helper.helper import *
-from czii_helper.helper2 import *
-from czii_helper.dataset import *
+from utils.helper import *
+from utils.dataset import *
 
 cls_names = ['', 'a-fer', 'b-amy', 'b-gal', 'ribo ', 'thyr ', 'vlp  ']
 
@@ -106,7 +105,7 @@ def compute_lb_for_exp(submit_df, overlay_dir):
     return gb
 
 
-def find_the_best_certainty_threshold(cfg):
+def search_best_prob_thresh(cfg):
 
     input_dir  = cfg.local_kaggle_dataset_dir
     path_to_model = sorted(glob(f'./working/train/{cfg.model_folder}/*.pth'))

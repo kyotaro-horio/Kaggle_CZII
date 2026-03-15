@@ -2,36 +2,34 @@ import os
 import shutil
 from tqdm import tqdm
 import numpy as np
-
 from collections import defaultdict
-
 import copick
 from copick_utils.segmentation import segmentation_from_picks
 import copick_utils.writers.write as write
 
-from util.helper import *
+from src.utils.helper import *
 
 
 if __name__ == '__main__':
     # load config
     cfg = dotdict(load_config('config.yml'))
     
-    # in/out directory
-    indir = cfg.local_kaggle_dataset_dir
-    outdir = './working'
-    os.makedirs(outdir, exist_ok=True)
+    # set input and output directories
+    input_dir  = cfg.local_kaggle_dataset_dir
+    output_dir = './working'
+    os.makedirs(output_dir, exist_ok=True)
     
-    # paths
-    copick_config_path  = f"{outdir}/copick.config"
-    source_dir = f'{indir}/train/overlay'
-    destination_dir = f'{outdir}/overlay'
+    # set config and source/destination paths
+    copick_config_path  = f"{output_dir}/copick.config"
+    source_dir          = f'{input_dir}/train/overlay'
+    destination_dir     = f'{output_dir}/overlay'
     
     # configs in this script
-    radius_factor = cfg.radius_factor # 0.8
-    copick_user_name = 'copickUtils'
+    radius_factor            = cfg.radius_factor
+    copick_user_name         = 'copickUtils'
     copick_segmentation_name = 'paintedPicks'
-    voxel_size = 10
-    tomo_type = 'denoised'
+    voxel_size               = 10
+    tomo_type                = 'denoised'
     
     # Walk through the source directory
     for root, dirs, files in os.walk(source_dir):
