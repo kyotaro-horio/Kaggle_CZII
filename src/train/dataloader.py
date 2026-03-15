@@ -23,7 +23,7 @@ from monai.transforms import (
     OneOf, 
 )
 
-def generate_trn_val_dataloader(trn_files, val_files, cfg):
+def gen_train_val_dataloader(trn_files, val_files, cfg):
 
     non_random_transforms = Compose([
         EnsureChannelFirstd(keys=["image", "label"], channel_dim="no_channel"),
@@ -59,10 +59,10 @@ def generate_trn_val_dataloader(trn_files, val_files, cfg):
         RandAdjustContrastd(keys=["image"], prob=0.7, gamma=[0.8, 1.2]), 
     ])
 
-    trn_ds = CacheDataset(data=trn_files, transform=non_random_transforms, cache_rate=1.0)
-    trn_ds = Dataset(data=trn_ds, transform=random_transforms)
-    trn_loader = DataLoader(
-        trn_ds,
+    train_ds = CacheDataset(data=trn_files, transform=non_random_transforms, cache_rate=1.0)
+    train_ds = Dataset(data=train_ds, transform=random_transforms)
+    train_loader = DataLoader(
+        train_ds,
         batch_size=1,
         shuffle=True,
         num_workers=4,
@@ -92,4 +92,4 @@ def generate_trn_val_dataloader(trn_files, val_files, cfg):
         shuffle=False,  # Ensure the data order remains consistent
     )
 
-    return trn_loader, val_loader
+    return train_loader, val_loader

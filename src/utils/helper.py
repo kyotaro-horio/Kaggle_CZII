@@ -1,11 +1,19 @@
+import torch
 from typing import List, Tuple, Union
 import numpy as np
 import pandas as pd
+from scipy.optimize import linear_sum_assignment
+import yaml
+import random
 
-classes = [1, 2, 3, 4, 5, 6]
-n_classes = len(classes) + 1
+from .dataset import *
 
-id_to_name = {
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+CLASSES = [1, 2, 3, 4, 5, 6]
+NUM_CLASSES = len(CLASSES) + 1
+ID_TO_NAME = {
     1: "apo-ferritin", 
     2: "beta-amylase",
     3: "beta-galactosidase", 
@@ -14,7 +22,28 @@ id_to_name = {
     6: "virus-like-particle"
 }
 
-# --
+class dotdict(dict):
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+        
+
+def load_config(config_path):
+    with open(config_path) as file:
+        config = yaml.safe_load(file)
+    return config
+
+def seed_everything(seed):
+	random.seed(seed)
+	np.random.seed(seed)
+	torch.manual_seed(seed)
+	torch.cuda.manual_seed_all(seed)
+	torch.backends.cudnn.deterministic = True
 
 def calculate_patch_starts(
         dimension_size: int, 
@@ -154,6 +183,25 @@ def reconstruct_array(patches: List[np.ndarray],
     
     return reconstructed
 
+def get_gaussian_weight(kernel_size, sigma=1, muu=0):
+    x, y, z = torch.meshgrid(
+        torch.linspace(-kernel_size[0]//2, kernel_size[0]//2, kernel_size[0]),
+        torch.linspace(-kernel_size[1]//2, kernel_size[1]//2, kernel_size[1]), 
+        torch.linspace(-kernel_size[2]//2, kernel_size[2]//2, kernel_size[2])
+        )
+    mean = torch.Tensor([muu, muu, muu])  # Mean of the Gaussian
+    std_dev = torch.Tensor([sigma, sigma, sigma])  # Standard deviation along each axis
+    gaussian = torch.exp(
+        -0.5 * (
+            ((x - mean[0]) / std_dev[0])**2 +
+            ((y - mean[1]) / std_dev[1])**2 +
+            ((z - mean[2]) / std_dev[2])**2
+        )
+    )
+    # gaussian = gaussian / gaussian.max()
+    # gaussian = (gaussian*255).to(torch.int16)
+    return gaussian
+
 def dict_to_df(coord_dict, experiment_name):
     """
     Convert dictionary of coordinates to pandas DataFrame.
@@ -191,3 +239,75 @@ def dict_to_df(coord_dict, experiment_name):
     
     return df
 
+def do_one_eval(truth, predict, threshold):
+    P=len(predict)
+    T=len(truth)
+
+    if P==0:
+        hit=[[],[]]
+        miss=np.arange(T).tolist()
+        fp=[]
+        metric = [P,T,len(hit[0]),len(miss),len(fp)]
+        return hit, fp, miss, metric
+
+    if T==0:
+        hit=[[],[]]
+        fp=np.arange(P).tolist()
+        miss=[]
+        metric = [P,T,len(hit[0]),len(miss),len(fp)]
+        return hit, fp, miss, metric
+
+    #---
+    distance = predict.reshape(P,1,3)-truth.reshape(1,T,3)
+    distance = distance**2
+    distance = distance.sum(axis=2)
+    distance = np.sqrt(distance)
+    p_index, t_index = linear_sum_assignment(distance)
+
+    valid = distance[p_index, t_index] <= threshold
+    p_index = p_index[valid]
+    t_index = t_index[valid]
+    hit = [p_index.tolist(), t_index.tolist()]
+    miss = np.arange(T)
+    miss = miss[~np.isin(miss,t_index)].tolist()
+    fp = np.arange(P)
+    fp = fp[~np.isin(fp,p_index)].tolist()
+
+    metric = [P,T,len(hit[0]),len(miss),len(fp)] #for lb metric F-beta copmutation
+    return hit, fp, miss, metric
+
+def compute_lb(submit_df, overlay_dir):
+
+    valid_id = list(submit_df['experiment'].unique())
+    print(valid_id)
+
+    eval_df = []
+    for id in valid_id:
+        truth = read_one_truth(id, overlay_dir) #=f'{valid_dir}/overlay/ExperimentRuns')
+        id_df = submit_df[submit_df['experiment'] == id]
+        
+        for p in PARTICLE:
+            p = dotdict(p)            
+            xyz_truth = truth[p.name]
+            xyz_predict = id_df[id_df['particle_type'] == p.name][['x', 'y', 'z']].values
+            hit, fp, miss, metric = do_one_eval(xyz_truth, xyz_predict, p.radius* 0.5)
+            eval_df.append(dotdict(
+                id=id, particle_type=p.name,
+                P=metric[0], T=metric[1], hit=metric[2], miss=metric[3], fp=metric[4],
+            )) 
+    print('')
+
+    eval_df = pd.DataFrame(eval_df)
+    gb = eval_df.groupby('particle_type').agg('sum').drop(columns=['id'])
+    gb.loc[:, 'precision'] = gb['hit'] / gb['P']
+    gb.loc[:, 'precision'] = gb['precision'].fillna(0)
+    gb.loc[:, 'recall'] = gb['hit'] / gb['T']
+    gb.loc[:, 'recall'] = gb['recall'].fillna(0)
+    gb.loc[:, 'f-beta4'] = 17 * gb['precision'] * gb['recall'] / (16 * gb['precision'] + gb['recall'])
+    gb.loc[:, 'f-beta4'] = gb['f-beta4'].fillna(0)
+
+    gb = gb.sort_values('particle_type').reset_index(drop=False)
+    # https://www.kaggle.com/competitions/czii-cryo-et-object-identification/discussion/544895
+    gb.loc[:, 'weight'] = [1, 0, 2, 1, 2, 1]
+    lb_score = (gb['f-beta4'] * gb['weight']).sum() / gb['weight'].sum()
+    return gb, lb_score
