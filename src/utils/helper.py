@@ -1,3 +1,6 @@
+import os
+from datetime import datetime
+import copick
 import torch
 from typing import List, Tuple, Union
 import numpy as np
@@ -32,6 +35,35 @@ class dotdict(dict):
         except KeyError:
             raise AttributeError(name)
         
+def make_outdir(cfg) -> None:
+    dt = datetime.now().strftime('%Y%m%d_%H%M%S')
+    foldername = f'{dt}_{cfg.exp_name}'
+    foldername += f'{cfg.batch_size}_{cfg.epochs}_{"x".join([str(i) for i in cfg.patch_size])}'
+    cfg.model_folder = foldername
+    os.makedirs(f'./working/train/{foldername}', exist_ok=True)
+
+def prepare_dataset_df(cfg) -> None:
+    root = copick.from_file('./working/copick.config')
+    run_names = [r.name for r in root.runs]
+    num_folds = len(run_names)
+    df = []
+    if cfg.mode=='local':
+        for i in range(num_folds):
+            test_name = run_names[i]
+            val_name = run_names[i+1 if i<num_folds-1 else 0] # shift one
+            train_names = run_names.copy()
+            train_names.remove(test_name)
+            train_names.remove(val_name)
+            df.append({'train':train_names, 'val':val_name, 'test':test_name})
+
+    if cfg.mode=='sub':
+        for i in range(num_folds):
+            val_name = run_names[i]
+            train_names = run_names.copy()
+            train_names.remove(val_name)
+            df.append({'train':train_names, 'val':val_name})
+    
+    cfg.data_split = pd.DataFrame(df)
 
 def load_config(config_path):
     with open(config_path) as file:

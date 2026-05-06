@@ -4,23 +4,23 @@ import numpy as np
 import csv
 from monai.data import decollate_batch
 
-from train.metric import calc_fbeta
+# from train.metric import calc_fbeta
 
 
-def train(
-        cfg, train_loader, val_loader, 
+def trainer(
+        cfg, stage, train_loader, val_loader, 
         model, loss_func, metric_func, optimizer, scheduler, 
         post_pred, post_label, 
         ):
     
-    # writing header in the command line and log file
+    # write header in the command line and log file
     text = ''
     text +=   '                    | loss -----------| metric ----------------------------------------------------------------'
     text += '\nepoch   | lr        | train  | val    | a-fer  b-amy  b-gal  ribo   thyr   vlp    | mean   | best              '
     text += '\n========|===========|========|========|===========================================|========|==================='
     #          005/500 | 0.0000999 | 0.9091 | 0.9203 | 0.0062 0.0000 0.0000 0.0000 0.0545 0.0052 | 0.0172 | 0.0172 (005 epoch)
     print(text)
-    with open(f"./working/train/{cfg.model_folder}/log_stage{cfg.stage}_fold{cfg.fold}.csv", 'w') as f:
+    with open(f"./working/train/{cfg.model_folder}/log_stage{stage}_fold{cfg.fold}.csv", 'w') as f:
         writer = csv.writer(f)
         writer.writerow([
                 'epoch', 'lr', 'loss_train', 'loss_val',
@@ -28,11 +28,11 @@ def train(
                 'dice_mean', 
             ])
 
-    # setting up max epochs and val interval
-    max_epochs = 100 if cfg.stage == 2 else cfg.epochs
+    # set up max epochs and val interval
+    max_epochs = cfg.epochs if stage == 0 else 100
     val_interval = cfg.val_interval
 
-    # main train loop
+    # train loop
     best_metric, best_metric_epoch = -1, -1
     for epoch in range(max_epochs):
         model.train()
@@ -68,7 +68,7 @@ def train(
                     metric_val_outputs = [post_pred(i) for i in decollate_batch(val_outputs)]
                     metric_val_labels = [post_label(i) for i in decollate_batch(val_labels)]
 
-                    # computing metric at the current iteration
+                    # compute metric at the current iteration
                     metric_func(y_pred=metric_val_outputs, y=metric_val_labels)
 
                 epoch_loss_val /= step_val
@@ -82,7 +82,7 @@ def train(
                     best_metric_epoch = epoch + 1
                     torch.save(model.state_dict(), f"./working/train/{cfg.model_folder}/{cfg.exp_name}_{cfg.fold}.pth")
 
-                # writing training infos in the command linea and log file               
+                # write training infos in the command line and log file               
                 print(
                     f"{epoch + 1:0>3}/{max_epochs:0>3} "
                     f"| {current_lr:.7f} "
@@ -94,7 +94,7 @@ def train(
                     )
                 metrics = [float(m) for m in metrics]
                 metric = float(metric)
-                with open(f"./working/train/{cfg.model_folder}/log_stage{cfg.stage}_fold{cfg.fold}.csv", 'a') as f:
+                with open(f"./working/train/{cfg.model_folder}/log_stage{stage}_fold{cfg.fold}.csv", 'a') as f:
                     writer = csv.writer(f)
                     writer.writerow([
                             epoch + 1, current_lr, epoch_loss, epoch_loss_val, 

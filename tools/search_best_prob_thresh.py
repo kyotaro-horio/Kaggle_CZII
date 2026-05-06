@@ -27,9 +27,9 @@ import cc3d
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
-from train.trainer import *
-from utils.helper import *
-from utils.dataset import *
+from src.train.trainer import trainer
+from src.utils.helper import *
+from src.utils.dataset import *
 
 cls_names = ['', 'a-fer', 'b-amy', 'b-gal', 'ribo ', 'thyr ', 'vlp  ']
 

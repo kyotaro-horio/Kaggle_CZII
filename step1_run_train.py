@@ -2,7 +2,6 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import os
-from datetime import datetime
 import copick
 from tqdm import tqdm
 import numpy as np
@@ -12,6 +11,7 @@ import cc3d
 import pandas as pd
 
 from monai.networks.nets import UNet, DynUNet
+from monai.data import CacheDataset
 from monai.losses import DiceLoss, FocalLoss, TverskyLoss
 from monai.metrics import DiceMetric, ConfusionMatrixMetric
 from monai.transforms import AsDiscrete
@@ -27,43 +27,20 @@ from monai.transforms import (
     Rotate90, 
 )
 
-from src.train.trainer import *
-from src.train.dataloader import gen_train_val_dataloader
-from src.train.loss import FbetaLoss
+from src.train.trainer import trainer
+from src.train.dataloader import generate_train_val_dataloader
+# from src.train.loss import FbetaLoss
 from src.utils.helper import *
 from src.utils.dataset import *
 from tools.search_best_prob_thresh import search_best_prob_thresh
 
-def get_dataset_df(cfg) -> None:
-    root = copick.from_file('./working/copick.config')
-    run_names = [r.name for r in root.runs]
-    num_folds = len(run_names)
-    df = []
-    if cfg.mode=='local':
-        for i in range(num_folds):
-            test_name = run_names[i]
-            val_name = run_names[i+1 if i<num_folds-1 else 0] # shift one
-            train_names = run_names.copy()
-            train_names.remove(test_name)
-            train_names.remove(val_name)
-            df.append({'train':train_names, 'val':val_name, 'test':test_name})
-
-    if cfg.mode=='sub':
-        for i in range(num_folds):
-            val_name = run_names[i]
-            train_names = run_names.copy()
-            train_names.remove(val_name)
-            df.append({'train':train_names, 'val':val_name})
-    
-    cfg.data_split = pd.DataFrame(df)
-
 def run_train(cfg, stage):
-    seed_everything(cfg.seed)
+    if stage == 0:
+        print(f'\n[ stage 0. pre-training without ``denoised`` ]\n')
+    else:
+        print(f'\n[ stage 1. training with ``denoised`` ]\n')
     
-    cfg.stage = stage
-    print(f'\n ----- STAGE {cfg.stage} -----\n')
-
-    # setting copick configs
+    # set copick configs
     root = copick.from_file('./working/copick.config')
     copick_user_name = 'copickUtils'
     copick_segmentation_name = 'paintedPicks'
@@ -75,7 +52,7 @@ def run_train(cfg, stage):
     elif stage == 1:
         tomo_type = tomo_types[3:] # 'denoised'
     
-    # getting tomograms and their segmentation mask arrays
+    # get tomograms and their segmentation mask arrays
     train_files, val_files = [], []
     train_run_names = cfg['data_split'].iloc[cfg.fold]['train']
     val_run_names = cfg['data_split'].iloc[cfg.fold]['val']
@@ -91,63 +68,72 @@ def run_train(cfg, stage):
             elif run.name in val_run_names: 
                 val_files.append({"image": tomo, "label": seg})
 
-    train_loader, val_loader = gen_train_val_dataloader(train_files, val_files, cfg) # apply transforms
+    train_loader, val_loader = generate_train_val_dataloader(
+        train_files, val_files, cfg.patch_size, cfg.batch_size
+        )
+    print(f'#train: {len(train_files)}')
+    print(f'#val:   {len(val_files)}')
 
-    print(f'Train: {len(train_files)} / Val: {len(val_files)}')
-    print(f'Device: {cfg.device}')
+    # model definition
     model = UNet(
         spatial_dims=3, in_channels=1, out_channels=NUM_CLASSES,
         channels=(48, 64, 80, 80), strides=(2, 2, 1), num_res_units=1,
-    ).to(cfg.device)
+    )
+    model = model.to(cfg.device)
 
-    if stage == 1:
+    if stage == 1: # starts from the pre-trained model
         path_to_model = sorted(glob(f'./working/train/{cfg.model_folder}/*_{cfg.fold}.pth'))[0]
         model.load_state_dict(torch.load(path_to_model))
         for param in model.parameters():
             param.requires_grad = True
 
-    lr = float(cfg.lr)
-    optimizer = torch.optim.Adam(model.parameters(), lr)  
+    optimizer = torch.optim.Adam(model.parameters(), float(cfg.lr))  
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[round(cfg.epochs*0.3), round(cfg.epochs*0.8)], gamma=0.1)
-    metric_func = DiceMetric(include_background=False, reduction="mean", ignore_empty=True)
-    loss_func = TverskyLoss(include_background=True, to_onehot_y=True, softmax=True)  # `softmax=True` for multiclass
+    metric = DiceMetric(include_background=False, reduction="mean", ignore_empty=True)
+    loss = TverskyLoss(include_background=True, to_onehot_y=True, softmax=True)  # ``softmax=True`` for multiclass
 
     post_pred = AsDiscrete(argmax=True, to_onehot=NUM_CLASSES)
     post_label = AsDiscrete(to_onehot=NUM_CLASSES)
-    train(
-        cfg, train_loader, val_loader, 
-        model, loss_func, metric_func, optimizer, scheduler,
+
+    trainer(
+        cfg, stage, train_loader, val_loader, 
+        model, loss, metric, optimizer, scheduler,
         post_pred, post_label,
         )
 
 def do_cv(cfg):
     if not cfg.do_cv:
         return None
+    
     model_paths = sorted(glob(f'./working/train/{cfg.model_folder}/*.pth'))
     root = copick.from_file('./working/copick.config')
+    
+    # model definition
     model = UNet(
         spatial_dims=3, in_channels=1, out_channels=NUM_CLASSES,
         channels=(48, 64, 80, 80), strides=(2, 2, 1), num_res_units=1,
-    ).to(cfg.device)
-    inference_transforms = Compose([
+    )
+    model = model.to(cfg.device)
+    
+    test_transforms = Compose([
         EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
         NormalizeIntensityd(keys="image"),
         Orientationd(keys=["image"], axcodes="RAS")
     ])
 
-    weight = get_gaussian_weight(
-        cfg.patch_size, cfg.patch_size[1]//2-0, 0
-        ).to(cfg.device)
+    gauss_weight = get_gaussian_weight(cfg.patch_size, cfg.patch_size[1]//2-0, 0)
+    gauss_weight = gauss_weight.to(cfg.device)
+
     with torch.no_grad():
         run = root.runs[cfg.fold]
         # pick up the trained model which corresponds to the current fold
         for path in model_paths:
             if cfg.fold == int(path[-len('.pth')-1]):
-                print(f'Model: {os.path.basename(path)}')
+                print(f'load model : {os.path.basename(path)}')
                 model.load_state_dict(torch.load(path))
                 model.eval()
 
-        print(f'** TEST {run.name} FOR CV **')
+        print(f'** test {run.name} for CV **')
         start = time.time()
 
         tomo = run.get_voxel_spacing(10)
@@ -155,7 +141,7 @@ def do_cv(cfg):
         original_shape = tomo.shape
         tomo_patches, coordinates  = extract_3d_patches_minimal_overlap([tomo], cfg.patch_size, cfg.overlap)
         tomo_patched_data = [{"image": img} for img in tomo_patches]
-        tomo_ds = CacheDataset(data=tomo_patched_data, transform=inference_transforms, cache_rate=1.0)
+        tomo_ds = CacheDataset(data=tomo_patched_data, transform=test_transforms, cache_rate=1.0)
 
         reconstructed = torch.zeros(
             [NUM_CLASSES, original_shape[0], original_shape[1], original_shape[2]]
@@ -201,7 +187,7 @@ def do_cv(cfg):
                 coordinates[i][0]:coordinates[i][0] + cfg.patch_size[0],
                 coordinates[i][1]:coordinates[i][1] + cfg.patch_size[1],
                 coordinates[i][2]:coordinates[i][2] + cfg.patch_size[2]
-            ] += weight
+            ] += gauss_weight
 
         reconstructed /= count
         
@@ -216,7 +202,7 @@ def do_cv(cfg):
             thresh_max_classes = torch.zeros_like(reconstructed[0])
             for ch in range(NUM_CLASSES):
                 max_channel_is_one = torch.where(max_classes==ch, 1, 0)
-                thresh_prob[ch] = max_probs * max_channel_is_one > cfg.certainty_threshold[ch]
+                thresh_prob[ch] = max_probs * max_channel_is_one > cfg.prob_thresh[ch]
                 thresh_prob[ch] = torch.where(thresh_prob[ch]==1, ch, 0)
                 thresh_max_classes += thresh_prob[ch]
 
@@ -227,7 +213,7 @@ def do_cv(cfg):
             cc = cc3d.connected_components(thresh_max_classes == c)
             stats = cc3d.statistics(cc)
             zyx=stats['centroids'][1:]*10.012444 #https://www.kaggle.com/competitions/czii-cryo-et-object-identification/discussion/544895#3040071
-            zyx_large = zyx[stats['voxel_counts'][1:] > cfg.blob_threshold]
+            zyx_large = zyx[stats['voxel_counts'][1:] > cfg.blob_thresh]
             xyz =np.ascontiguousarray(zyx_large[:,::-1])
             location[ID_TO_NAME[c]] = xyz
 
@@ -239,32 +225,29 @@ def do_cv(cfg):
 
     #-- scoring
     gb, lb_score = compute_lb(location_df, f'{cfg.local_kaggle_dataset_dir}/train/overlay/ExperimentRuns')
-    print(f'LB Score: {lb_score} / Inference Time: {inference_time}')
-
-def make_output_folder(cfg) -> None:
-    dt = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_folder_name = f'{dt}_{cfg.exp_name}'
-    output_folder_name += f'{cfg.batch_size}_{cfg.epochs}_{"x".join([str(i) for i in cfg.patch_size])}'
-    cfg.model_folder = output_folder_name
-    os.makedirs(f'./working/train/{output_folder_name}', exist_ok=True)
-
+    print(f'LB score : {lb_score}')
+    print(f'inference time : {inference_time:.2f} sec')
 
 if __name__ == '__main__':
     cfg = dotdict(load_config('config.yml'))
-    _, _ = make_output_folder(cfg), get_dataset_df(cfg)
+    make_outdir(cfg)
+    prepare_dataset_df(cfg)
+    seed_everything(cfg.seed)
+
+    cfg.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'device: {cfg.device}')
 
     # for i in [0,1,2,3,4,5,6]: 
     for i in [0]:
         cfg.fold = i
-        print(
-            f'\n ================================'
-            f'\n         CZII TRAIN FOLD {i}'
-            f'\n ================================'
-            )
-        run_train(cfg, stage=0) # pretrain w/ 'ctfdeconvolved', 'isonetcorrected', and 'wbp'
-        run_train(cfg, stage=1) # train w/ 'denoised'
-    
-        cfg.prob_thresh = search_best_prob_thresh(cfg) if cfg.find_best_thresh else cfg.prob_thresh
-        print(f'\nThreshold: {cfg.prob_thresh}\n')
+        run_train(cfg, stage=0) # pre-train with 'ctfdeconvolved', 'isonetcorrected', and 'wbp'
+        run_train(cfg, stage=1) # train with 'denoised'
+
+        if cfg.do_thresh_optimization:
+            cfg.prob_thresh = search_best_prob_thresh(cfg)
+
+        print(f'\nprobability thresholds for each class :')
+        print(f'\t{cfg.prob_thresh}\n')
+
         do_cv(cfg)
             

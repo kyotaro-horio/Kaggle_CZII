@@ -13,8 +13,8 @@ radius_factor: 0.5
 
 # --- test ---
 do_cv: True
-model_folder: 20250210_170113_3dunet_16_1e-3_300_96x96x96
-find_best_thresh: False
+model_folder: code_test
+do_thresh_optimization: False
 prob_thresh: [0.5, 0.75, 0.95, 0.95, 0.95, 0.95, 0.9]
 blob_thresh: 25
 tta: False
